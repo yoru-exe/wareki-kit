@@ -1,0 +1,49 @@
+{
+  "name": "wareki-kit",
+  "version": "0.1.0",
+  "description": "Convert between Gregorian dates and Japanese era dates (和暦: 令和, 平成, 昭和, 大正, 明治). Zero dependencies, with TypeScript types.",
+  "keywords": [
+    "wareki",
+    "japanese-era",
+    "japanese-calendar",
+    "nengo",
+    "reiwa",
+    "heisei",
+    "showa",
+    "date",
+    "converter",
+    "和暦",
+    "元号"
+  ],
+  "license": "MIT",
+  "author": "yoru-exe",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "test": "node --test",
+    "prepublishOnly": "npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yoru-exe/wareki-kit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yoru-exe/wareki-kit/issues"
+  },
+  "homepage": "https://github.com/yoru-exe/wareki-kit#readme"
+}
