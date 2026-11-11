@@ -246,7 +246,10 @@ function readGregorian(input) {
 // Parsing patterns
 // ---------------------------------------------------------------------------
 
-const NUMBER = String.raw`(?:\d{1,3}|[〇零一二三四五六七八九十百千]+)`;
+const NUMBER = String.raw`(?:\d{1,5}|[〇零一二三四五六七八九十百千]+)`;
+
+/** Real dates are a few dozen characters. Anything longer is rejected up front. */
+const MAX_INPUT_LENGTH = 200;
 
 /** 令和8年11月11日, 令和元年, 令和八年十一月十一日 */
 const KANJI_DATE = new RegExp(
@@ -255,11 +258,15 @@ const KANJI_DATE = new RegExp(
 
 /** R8.11.11, Reiwa 8.11.11 (already lower-cased and stripped of macrons) */
 const LATIN_DATE =
-  /^(meiji|taisho|showa|heisei|reiwa|[mtshr])\s*(\d{1,3})(?:[./-](\d{1,2})(?:[./-](\d{1,2}))?)?$/;
+  /^(meiji|taisho|showa|heisei|reiwa|[mtshr])\s*(\d{1,5})(?:[./-](\d{1,2})(?:[./-](\d{1,2}))?)?$/;
 
-/** A trailing weekday: (水)  (水曜日)  水曜日  (Wed)  (Wednesday) */
+/**
+ * A trailing weekday: (水)  (水曜日)  水曜日  (Wed)  (Wednesday)
+ * Deliberately not anchored at the start: a leading `(.*?)\s*` makes the match
+ * quadratic on long runs of spaces. Use `match.index` to cut the suffix off.
+ */
 const WEEKDAY_SUFFIX =
-  /^(.*?)\s*(?:\(\s*([日月火水木金土])(?:曜日)?\s*\)|([日月火水木金土])曜日|\(\s*(sun(?:day)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?)\s*\))$/i;
+  /(?:\(\s*([日月火水木金土])(?:曜日)?\s*\)|([日月火水木金土])曜日|\(\s*(sun(?:day)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?)\s*\))$/i;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -293,16 +300,19 @@ export function toWareki(input) {
  */
 export function parseWareki(text) {
   if (typeof text !== 'string') throw new TypeError('parseWareki() expects a string');
+  if (text.length > MAX_INPUT_LENGTH) {
+    throw new SyntaxError(`Input is too long to be a wareki date (over ${MAX_INPUT_LENGTH} characters)`);
+  }
   let s = text.normalize('NFKC').trim();
 
   let weekday = null;
   const wd = WEEKDAY_SUFFIX.exec(s);
   if (wd) {
-    s = wd[1];
-    const ja = wd[2] ?? wd[3];
+    s = s.slice(0, wd.index).trimEnd();
+    const ja = wd[1] ?? wd[2];
     weekday = ja
       ? WEEKDAYS_JA.indexOf(ja)
-      : WEEKDAYS_EN.findIndex((name) => name.slice(0, 3).toLowerCase() === wd[4].slice(0, 3).toLowerCase());
+      : WEEKDAYS_EN.findIndex((name) => name.slice(0, 3).toLowerCase() === wd[3].slice(0, 3).toLowerCase());
   }
 
   const num = (v) => {

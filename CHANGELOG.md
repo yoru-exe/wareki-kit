@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 - 2026-11-12
+
+### Fixed
+
+- `parseWareki` took quadratic time on a long run of spaces before a `(`: about 6.5 seconds for 80,000 spaces. It is now linear, and input over 200 characters is rejected up front with a `SyntaxError`.
+- Era years of 1000 or more (Gregorian 3018 onward) could be formatted but not parsed back. They now round-trip.
+
 ## 0.2.0 - 2026-11-12
 
 ### Added

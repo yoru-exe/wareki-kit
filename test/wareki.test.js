@@ -509,3 +509,45 @@ test('CLI: errors go to stderr with a non-zero exit code', () => {
     assert.match(r.err, /^wareki: /);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Regression tests (0.2.1)
+// ---------------------------------------------------------------------------
+
+test('large era years (1000+) round-trip in every style', () => {
+  for (const n of [999, 1000, 1234, 9999, 12345, 99999]) {
+    const g = 2018 + n;
+    for (const opts of [{ gannen: false }, { numerals: 'kanji', gannen: false }, { style: 'short' }, { style: 'roman' }]) {
+      const w = parseWareki(formatWareki(g, opts));
+      assert.equal(w.year, n, JSON.stringify(opts));
+      assert.equal(w.gregorianYear, g);
+    }
+  }
+});
+
+test('parseWareki stays fast on pathological input', () => {
+  const evil = [
+    '令和8年' + ' '.repeat(80_000) + '(',
+    '令和8年' + ' '.repeat(80_000) + '(水)',
+    'R8.11.11 (' + 'w'.repeat(80_000) + ')',
+    '('.repeat(80_000),
+    ' '.repeat(80_000) + 'R8',
+    '令和' + '十'.repeat(80_000) + '年',
+    '令和8年' + '(水) '.repeat(20_000),
+  ];
+  const t0 = performance.now();
+  for (const s of evil) {
+    assert.throws(() => parseWareki(s), SyntaxError);
+  }
+  assert.ok(performance.now() - t0 < 200, `took ${(performance.now() - t0).toFixed(0)} ms`);
+});
+
+test('parseWareki still works on inputs just under the length limit', () => {
+  assert.equal(parseWareki('令和8年11月11日' + ' '.repeat(150) + '(水)').day, 11);
+  assert.throws(() => parseWareki('令和8年11月11日' + ' '.repeat(250) + '(水)'), /too long/);
+});
+
+test('weekday: null and undefined mean "off"', () => {
+  assert.equal(formatWareki('2026-11-11', { weekday: null }), '令和8年11月11日');
+  assert.equal(formatWareki('2026-11-11', { weekday: undefined }), '令和8年11月11日');
+});

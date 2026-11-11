@@ -1,6 +1,6 @@
 {
   "name": "wareki-kit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Convert between Gregorian dates and Japanese era dates (和暦: 令和, 平成, 昭和, 大正, 明治). Zero dependencies, with TypeScript types.",
   "keywords": [
     "wareki",
