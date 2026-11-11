@@ -8,7 +8,8 @@ Convert between Gregorian dates and Japanese era dates (和暦), such as 令和8
 
 - Covers 明治 (Meiji) through 令和 (Reiwa), with exact day-level boundaries
 - Parses and formats kanji, short (`R8.11.11`) and romaji (`Reiwa 8.11.11`) forms
-- Handles 元年 (gannen) and full-width digits
+- Kanji numerals (`令和八年十一月十一日`), weekdays (`(水)`), 元年 (gannen) and full-width digits
+- Includes a small command-line tool
 - Zero dependencies, ESM, TypeScript types included
 - Tested against the JavaScript engine's own Japanese calendar for every day from 1868-10-23 to 2100-12-31
 
@@ -43,6 +44,37 @@ fromWareki('令和8年11月11日');                           // Date at local m
 fromWareki({ era: 'H', year: 31, month: 4, day: 30 });  // Date for 2019-04-30
 ```
 
+### Kanji numerals
+
+```js
+formatWareki('2026-11-11', { numerals: 'kanji' }); // '令和八年十一月十一日'
+formatWareki('1989-01-07', { numerals: 'kanji' }); // '昭和六十四年一月七日'
+formatWareki('2026-10-20', { numerals: 'kanji' }); // '令和八年十月二十日'
+
+parseWareki('令和八年十一月十一日');  // 2026-11-11
+parseWareki('令和二〇年');            // positional form, 2038
+parseWareki('令和８年十一月11日');    // digits and kanji can be mixed
+```
+
+Kanji numerals work with the default `long` style only.
+
+### Weekdays
+
+```js
+formatWareki('2026-11-11', { weekday: 'short' }); // '令和8年11月11日(水)'
+formatWareki('2026-11-11', { weekday: 'long' });  // '令和8年11月11日水曜日'
+formatWareki('2026-11-11', { style: 'roman', weekday: 'long' }); // 'Reiwa 8.11.11 (Wednesday)'
+```
+
+`parseWareki` also accepts a trailing weekday, and checks it against the date:
+
+```js
+parseWareki('令和8年11月11日(水)');  // ok
+parseWareki('令和8年11月11日(木)');  // RangeError: ... that date is a Wednesday, not a Thursday
+```
+
+This catches typos in data that carries both a date and its weekday. A weekday needs a full date (year, month and day).
+
 ### Era boundaries
 
 Era changes happen mid-year, and the package gets them right:
@@ -71,13 +103,27 @@ parseWareki('平成31年5月1日'); // RangeError: ... is outside the Heisei era
 toWareki('2025-02-29');        // RangeError: Invalid day ...
 ```
 
+## Command line
+
+```sh
+npx wareki-kit                      # today
+npx wareki-kit 2026-11-11           # 令和8年11月11日
+npx wareki-kit 2026-11-11 --kanji   # 令和八年十一月十一日
+npx wareki-kit 2026-11-11 -s short  # R8.11.11
+npx wareki-kit 2026-11-11 -w long   # 令和8年11月11日水曜日
+npx wareki-kit 令和8年11月11日       # 2026-11-11
+npx wareki-kit R8.11.11 --json      # full result as JSON
+```
+
+Install it globally (`npm install -g wareki-kit`) to get the shorter `wareki` command. Run `wareki --help` for all options.
+
 ## API
 
 | Function | Description |
 | --- | --- |
 | `toWareki(input)` | Gregorian to wareki object. Input can be a `Date`, a `"YYYY-MM-DD"`, `"YYYY-MM"` or `"YYYY"` string, a year number, or `{ year, month?, day? }`. |
-| `formatWareki(input, options?)` | Gregorian to wareki text. Options: `style` (`'long'` \| `'short'` \| `'roman'`), `gannen` (boolean, default `true`). |
-| `parseWareki(text)` | Wareki text to wareki object. Accepts kanji, short and romaji forms. |
+| `formatWareki(input, options?)` | Gregorian to wareki text. Options: `style` (`'long'` \| `'short'` \| `'roman'`), `gannen` (boolean, default `true`), `numerals` (`'arabic'` \| `'kanji'`), `weekday` (`false` \| `'short'` \| `'long'`). |
+| `parseWareki(text)` | Wareki text to wareki object. Accepts kanji, short and romaji forms, kanji numerals and a trailing weekday. |
 | `fromWareki(input)` | Wareki text or `{ era, year, month, day }` to a `Date` at local midnight. Month and day are required. |
 | `toGregorianYear(era, year)` | `toGregorianYear('平成', 1) === 1989`. |
 | `getEra(input)` | The era object in effect for a date. |
@@ -86,12 +132,26 @@ toWareki('2025-02-29');        // RangeError: Invalid day ...
 
 Anywhere an era is accepted you can pass `令和`, `Reiwa` (any case, macrons allowed, so `Shōwa` works) or `R`.
 
-### Notes
+## Gotchas
 
-- **Time zones:** `Date` objects are read and created in local time, so the year, month and day your clock shows are what gets converted. No time-zone shifting happens.
-- **Meiji start date:** Meiji 1 is counted from 1868-01-25, which is how most conversion tables do it. Dates before that are not supported. Some date libraries (including ICU) switch from 慶応 to 明治 on 1868-10-23 instead, so results for early 1868 can differ from `Intl`.
-- **Calendar years only:** this package converts calendar dates. It does not handle the pre-1873 lunisolar calendar.
-- **New eras:** if a new era is announced, add it to the table in `src/index.js` and close the previous one.
+**`new Date('2026-11-11')` can give the wrong day.** JavaScript reads that string as midnight *UTC*. In a time zone behind UTC (anywhere in the Americas, for example) that moment is still November 10th locally, so you get 令和8年11月10日:
+
+```js
+// Los Angeles
+formatWareki(new Date('2026-11-11')); // '令和8年11月10日'  <- surprising
+formatWareki('2026-11-11');           // '令和8年11月11日'  <- pass the string directly
+formatWareki(new Date(2026, 10, 11)); // '令和8年11月11日'  <- or build the Date from parts
+```
+
+`Date` objects are always read in local time: the year, month and day your clock shows. No time-zone shifting happens.
+
+**Year-only input uses the era at the end of the year.** `formatWareki(1989)` is `平成元年`, even though 昭和64年 covered the first week. Pass a full date, or use `erasInYear()`, when it matters.
+
+**Meiji starts on 1868-01-25.** That is how most conversion tables count Meiji 1. Dates before it are not supported. Some date libraries (including ICU, which powers `Intl`) switch from 慶応 to 明治 on 1868-10-23 instead, so results for early 1868 can differ from `Intl`.
+
+**Calendar dates only.** The package does not handle the pre-1873 lunisolar calendar.
+
+**New eras:** if a new era is announced, add it to the table in `src/index.js` and close the previous one.
 
 ## Development
 

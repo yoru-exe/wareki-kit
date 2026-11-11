@@ -20,6 +20,77 @@ const key = (y, m, d) => y * 10000 + m * 100 + d;
 const pad = (n) => String(n).padStart(2, '0');
 const iso = ({ year, month, day }) => `${year}-${pad(month)}-${pad(day)}`;
 
+// ---------------------------------------------------------------------------
+// Kanji numerals and weekdays
+// ---------------------------------------------------------------------------
+
+const KANJI_DIGITS = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+const KANJI_VALUES = new Map([['零', 0], ...KANJI_DIGITS.map((c, i) => [c, i])]);
+const KANJI_UNITS = new Map([
+  ['十', 10],
+  ['百', 100],
+  ['千', 1000],
+]);
+const WEEKDAYS_JA = ['日', '月', '火', '水', '木', '金', '土'];
+const WEEKDAYS_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+/** 8 -> 八, 11 -> 十一, 20 -> 二十, 64 -> 六十四, 100 -> 百. Falls back to digits above 9999. */
+function toKanjiNumber(n) {
+  if (n > 9999) return String(n);
+  let out = '';
+  let rest = n;
+  for (const [value, unit] of [
+    [1000, '千'],
+    [100, '百'],
+    [10, '十'],
+  ]) {
+    const digit = Math.floor(rest / value);
+    rest %= value;
+    if (digit > 0) out += (digit === 1 ? '' : KANJI_DIGITS[digit]) + unit;
+  }
+  return out + (rest > 0 ? KANJI_DIGITS[rest] : '');
+}
+
+/**
+ * Reads 八, 十一, 二十一, 六十四, 百二十 and also positional forms such as 二〇.
+ * Returns NaN for anything malformed (十十, 二〇十, 一一, ...).
+ */
+function parseKanjiNumber(text) {
+  if (![...text].some((c) => KANJI_UNITS.has(c))) {
+    let n = 0;
+    for (const c of text) {
+      const d = KANJI_VALUES.get(c);
+      if (d === undefined) return NaN;
+      n = n * 10 + d;
+    }
+    return n;
+  }
+  let total = 0;
+  let lastUnit = Infinity;
+  let digit = null;
+  for (const c of text) {
+    const unit = KANJI_UNITS.get(c);
+    if (unit !== undefined) {
+      if (unit >= lastUnit) return NaN;
+      total += (digit ?? 1) * unit;
+      digit = null;
+      lastUnit = unit;
+    } else {
+      const d = KANJI_VALUES.get(c);
+      if (d === undefined || d === 0 || digit !== null) return NaN;
+      digit = d;
+    }
+  }
+  return total + (digit ?? 0);
+}
+
+/** Day of the week (0 = Sunday) for a Gregorian date. */
+const weekdayOf = (y, m, d) => new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+
+// ---------------------------------------------------------------------------
+// Era table
+// ---------------------------------------------------------------------------
+
 const calendarDate = (year, month, day) => Object.freeze({ year, month, day });
 const makeEra = (name, roman, short, start, end) =>
   Object.freeze({ name, roman, short, start, end });
@@ -92,10 +163,11 @@ const build = (era, eraYear, month, day) => ({
 
 const STYLES = ['long', 'short', 'roman'];
 
-function formatParts(era, eraYear, month, day, style, gannen) {
+function formatParts(era, eraYear, month, day, style, gannen, numerals = 'arabic') {
   if (style === 'long') {
-    const y = gannen && eraYear === 1 ? '元' : eraYear;
-    return `${era.name}${y}年${month === null ? '' : `${month}月`}${day === null ? '' : `${day}日`}`;
+    const n = numerals === 'kanji' ? toKanjiNumber : String;
+    const y = gannen && eraYear === 1 ? '元' : n(eraYear);
+    return `${era.name}${y}年${month === null ? '' : `${n(month)}月`}${day === null ? '' : `${n(day)}日`}`;
   }
   const head = style === 'short' ? `${era.short}${eraYear}` : `${era.roman} ${eraYear}`;
   return head + (month === null ? '' : `.${month}`) + (day === null ? '' : `.${day}`);
@@ -171,6 +243,25 @@ function readGregorian(input) {
 }
 
 // ---------------------------------------------------------------------------
+// Parsing patterns
+// ---------------------------------------------------------------------------
+
+const NUMBER = String.raw`(?:\d{1,3}|[〇零一二三四五六七八九十百千]+)`;
+
+/** 令和8年11月11日, 令和元年, 令和八年十一月十一日 */
+const KANJI_DATE = new RegExp(
+  String.raw`^(明治|大正|昭和|平成|令和)\s*(元|${NUMBER})\s*年(?:\s*(${NUMBER})\s*月(?:\s*(${NUMBER})\s*日)?)?$`,
+);
+
+/** R8.11.11, Reiwa 8.11.11 (already lower-cased and stripped of macrons) */
+const LATIN_DATE =
+  /^(meiji|taisho|showa|heisei|reiwa|[mtshr])\s*(\d{1,3})(?:[./-](\d{1,2})(?:[./-](\d{1,2}))?)?$/;
+
+/** A trailing weekday: (水)  (水曜日)  水曜日  (Wed)  (Wednesday) */
+const WEEKDAY_SUFFIX =
+  /^(.*?)\s*(?:\(\s*([日月火水木金土])(?:曜日)?\s*\)|([日月火水木金土])曜日|\(\s*(sun(?:day)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?)\s*\))$/i;
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -196,41 +287,67 @@ export function toWareki(input) {
 }
 
 /**
- * Parse wareki text such as "令和8年11月11日", "令和元年", "R8.11.11" or "Reiwa 8".
- * Full-width digits are accepted. Throws if the date does not exist in that era.
+ * Parse wareki text such as "令和8年11月11日", "令和八年十一月十一日", "R8.11.11" or
+ * "Reiwa 8". Full-width digits are accepted. A trailing weekday such as "(水)" is
+ * accepted and must match the date. Throws if the date does not exist in that era.
  */
 export function parseWareki(text) {
   if (typeof text !== 'string') throw new TypeError('parseWareki() expects a string');
-  const s = text.normalize('NFKC').trim();
-  const num = (v) => (v === undefined ? null : Number(v));
+  let s = text.normalize('NFKC').trim();
 
-  const kanji =
-    /^(明治|大正|昭和|平成|令和)\s*(元|\d{1,3})\s*年(?:\s*(\d{1,2})\s*月(?:\s*(\d{1,2})\s*日)?)?$/.exec(s);
+  let weekday = null;
+  const wd = WEEKDAY_SUFFIX.exec(s);
+  if (wd) {
+    s = wd[1];
+    const ja = wd[2] ?? wd[3];
+    weekday = ja
+      ? WEEKDAYS_JA.indexOf(ja)
+      : WEEKDAYS_EN.findIndex((name) => name.slice(0, 3).toLowerCase() === wd[4].slice(0, 3).toLowerCase());
+  }
+
+  const num = (v) => {
+    if (v === undefined) return null;
+    const n = /^\d/.test(v) ? Number(v) : parseKanjiNumber(v);
+    if (Number.isNaN(n)) throw new SyntaxError(`Cannot read "${v}" as a number in "${text}"`);
+    return n;
+  };
+
+  let result;
+  const kanji = KANJI_DATE.exec(s);
   if (kanji) {
-    return resolveWareki({
+    result = resolveWareki({
       era: kanji[1],
-      year: kanji[2] === '元' ? 1 : Number(kanji[2]),
+      year: kanji[2] === '元' ? 1 : num(kanji[2]),
       month: num(kanji[3]),
       day: num(kanji[4]),
     });
-  }
-
-  const latin =
-    /^(meiji|taisho|showa|heisei|reiwa|[mtshr])\s*(\d{1,3})(?:[./-](\d{1,2})(?:[./-](\d{1,2}))?)?$/.exec(
-      stripMarks(s).toLowerCase(),
-    );
-  if (latin) {
-    return resolveWareki({
+  } else {
+    const latin = LATIN_DATE.exec(stripMarks(s).toLowerCase());
+    if (!latin) {
+      throw new SyntaxError(
+        `Cannot parse "${text}" as a wareki date. Try "令和8年11月11日", "R8.11.11" or "Reiwa 8.11.11".`,
+      );
+    }
+    result = resolveWareki({
       era: latin[1],
       year: Number(latin[2]),
-      month: num(latin[3]),
-      day: num(latin[4]),
+      month: latin[3] === undefined ? null : Number(latin[3]),
+      day: latin[4] === undefined ? null : Number(latin[4]),
     });
   }
 
-  throw new SyntaxError(
-    `Cannot parse "${text}" as a wareki date. Try "令和8年11月11日", "R8.11.11" or "Reiwa 8.11.11".`,
-  );
+  if (weekday !== null) {
+    if (result.month === null || result.day === null) {
+      throw new RangeError('A weekday needs a full date (year, month and day)');
+    }
+    const actual = weekdayOf(result.gregorianYear, result.month, result.day);
+    if (actual !== weekday) {
+      throw new RangeError(
+        `${text.trim()} does not match: that date is a ${WEEKDAYS_EN[actual]}, not a ${WEEKDAYS_EN[weekday]}`,
+      );
+    }
+  }
+  return result;
 }
 
 /**
@@ -257,14 +374,42 @@ export function fromWareki(input) {
  * Options:
  *  - style: 'long' (令和8年11月11日, default), 'short' (R8.11.11) or 'roman' (Reiwa 8.11.11)
  *  - gannen: write 元年 instead of 1年 in the long style (default true)
+ *  - numerals: 'arabic' (default) or 'kanji' (令和八年十一月十一日); long style only
+ *  - weekday: false (default), 'short' or 'long' (or true for 'short'); needs a full date
  */
 export function formatWareki(input, options = {}) {
-  const { style = 'long', gannen = true } = options;
+  const { style = 'long', gannen = true, numerals = 'arabic' } = options;
+  const weekday = options.weekday === true ? 'short' : (options.weekday ?? false);
+
   if (!STYLES.includes(style)) {
     throw new RangeError(`Unknown style "${String(style)}". Use ${STYLES.map((s) => `"${s}"`).join(', ')}.`);
   }
+  if (numerals !== 'arabic' && numerals !== 'kanji') {
+    throw new RangeError(`Unknown numerals "${String(numerals)}". Use "arabic" or "kanji".`);
+  }
+  if (numerals === 'kanji' && style !== 'long') {
+    throw new RangeError('numerals: "kanji" can only be used with style: "long"');
+  }
+  if (weekday !== false && weekday !== 'short' && weekday !== 'long') {
+    throw new RangeError(`Unknown weekday option "${String(weekday)}". Use false, "short" or "long".`);
+  }
+
   const w = toWareki(input);
-  return formatParts(findEra(w.era), w.year, w.month, w.day, style, gannen);
+  const text = formatParts(findEra(w.era), w.year, w.month, w.day, style, gannen, numerals);
+  if (weekday === false) return text;
+
+  if (w.month === null || w.day === null) {
+    throw new RangeError('The weekday option needs a full date (year, month and day)');
+  }
+  const dow = weekdayOf(w.gregorianYear, w.month, w.day);
+  if (style === 'roman') {
+    const name = WEEKDAYS_EN[dow];
+    return `${text} (${weekday === 'long' ? name : name.slice(0, 3)})`;
+  }
+  if (weekday === 'long') {
+    return style === 'long' ? `${text}${WEEKDAYS_JA[dow]}曜日` : `${text}(${WEEKDAYS_JA[dow]}曜日)`;
+  }
+  return `${text}(${WEEKDAYS_JA[dow]})`;
 }
 
 /**

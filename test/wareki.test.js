@@ -333,3 +333,179 @@ test('can be loaded with require() (Node 22.12+)', () => {
   const cjs = require('../src/index.js');
   assert.equal(cjs.formatWareki('2026-11-11'), '令和8年11月11日');
 });
+
+// ---------------------------------------------------------------------------
+// Kanji numerals
+// ---------------------------------------------------------------------------
+
+const kanji = { numerals: 'kanji' };
+
+test('kanji numerals: formatting', () => {
+  assert.equal(formatWareki('2026-11-11', kanji), '令和八年十一月十一日');
+  assert.equal(formatWareki('1989-01-07', kanji), '昭和六十四年一月七日');
+  assert.equal(formatWareki('2019-05-01', kanji), '令和元年五月一日');
+  assert.equal(formatWareki('2019-05-01', { ...kanji, gannen: false }), '令和一年五月一日');
+  assert.equal(formatWareki('2026-10-10', kanji), '令和八年十月十日');
+  assert.equal(formatWareki('2026-10-20', kanji), '令和八年十月二十日');
+  assert.equal(formatWareki('2026-12-30', kanji), '令和八年十二月三十日');
+  assert.equal(formatWareki('1912-07-30', kanji), '大正元年七月三十日');
+  assert.equal(formatWareki(2026, kanji), '令和八年');
+  assert.equal(formatWareki('2026-11', kanji), '令和八年十一月');
+});
+
+test('kanji numerals: parsing, traditional and positional', () => {
+  assert.equal(parseWareki('令和八年十一月十一日').gregorianYear, 2026);
+  assert.equal(parseWareki('昭和六十四年一月七日').day, 7);
+  assert.equal(parseWareki('令和元年五月一日').month, 5);
+  assert.equal(parseWareki('令和二十年').gregorianYear, 2038);
+  assert.equal(parseWareki('令和二〇年').gregorianYear, 2038, 'positional');
+  assert.equal(parseWareki('令和百年').gregorianYear, 2118);
+  assert.equal(parseWareki('令和８年十一月11日').month, 11, 'mixed digits and kanji');
+  assert.equal(parseWareki('令和 八 年 十一 月').month, 11);
+  assert.throws(() => parseWareki('令和 八 年 十 一 月'), SyntaxError, 'no spaces inside one number');
+  assert.equal(parseWareki('平成三十一年四月三十日').day, 30);
+});
+
+test('kanji numerals: malformed numbers are rejected', () => {
+  for (const s of ['令和十十年', '令和二〇十年', '令和百百年', '令和二二十年', '令和十二十年', '令和八年十一月十一']) {
+    assert.throws(() => parseWareki(s), SyntaxError, s);
+  }
+  assert.throws(() => parseWareki('令和〇年'), RangeError, 'year zero');
+  assert.throws(() => parseWareki('令和八年十三月一日'), RangeError, 'month 13');
+  assert.throws(() => parseWareki('平成三十一年五月一日'), /outside the Heisei era/);
+});
+
+test('kanji numerals: every era year 1..2000 round-trips', () => {
+  for (let n = 1; n <= 2000; n++) {
+    const g = 2018 + n;
+    const text = formatWareki(g, { ...kanji, gannen: false });
+    assert.equal(parseWareki(text).year, n, text);
+    assert.equal(parseWareki(text).gregorianYear, g, text);
+  }
+});
+
+test('kanji numerals only work with the long style', () => {
+  assert.throws(() => formatWareki('2026-11-11', { style: 'short', numerals: 'kanji' }), RangeError);
+  assert.throws(() => formatWareki('2026-11-11', { numerals: 'roman' }), RangeError);
+  assert.equal(formatWareki('2026-11-11', { numerals: 'arabic' }), '令和8年11月11日');
+});
+
+// ---------------------------------------------------------------------------
+// Weekday
+// ---------------------------------------------------------------------------
+
+test('weekday formatting', () => {
+  assert.equal(formatWareki('2026-11-11', { weekday: 'short' }), '令和8年11月11日(水)');
+  assert.equal(formatWareki('2026-11-11', { weekday: true }), '令和8年11月11日(水)');
+  assert.equal(formatWareki('2026-11-11', { weekday: 'long' }), '令和8年11月11日水曜日');
+  assert.equal(formatWareki('2026-11-11', { style: 'short', weekday: 'short' }), 'R8.11.11(水)');
+  assert.equal(formatWareki('2026-11-11', { style: 'short', weekday: 'long' }), 'R8.11.11(水曜日)');
+  assert.equal(formatWareki('2026-11-11', { style: 'roman', weekday: 'short' }), 'Reiwa 8.11.11 (Wed)');
+  assert.equal(formatWareki('2026-11-11', { style: 'roman', weekday: 'long' }), 'Reiwa 8.11.11 (Wednesday)');
+  assert.equal(formatWareki('2026-11-11', { ...kanji, weekday: 'long' }), '令和八年十一月十一日水曜日');
+  assert.equal(formatWareki('2026-11-11', { weekday: false }), '令和8年11月11日');
+});
+
+test('weekday needs a full date and a valid mode', () => {
+  assert.throws(() => formatWareki(2026, { weekday: 'short' }), /full date/);
+  assert.throws(() => formatWareki('2026-11', { weekday: 'short' }), /full date/);
+  assert.throws(() => formatWareki('2026-11-11', { weekday: 'tiny' }), RangeError);
+});
+
+test('parseWareki accepts a trailing weekday and checks it', () => {
+  for (const s of [
+    '令和8年11月11日(水)',
+    '令和8年11月11日（水）',
+    '令和8年11月11日 (水)',
+    '令和8年11月11日水曜日',
+    '令和8年11月11日(水曜日)',
+    'R8.11.11(水)',
+    'Reiwa 8.11.11 (Wed)',
+    'reiwa 8.11.11 (wednesday)',
+    '令和八年十一月十一日水曜日',
+  ]) {
+    assert.deepEqual(
+      [parseWareki(s).gregorianYear, parseWareki(s).month, parseWareki(s).day],
+      [2026, 11, 11],
+      s,
+    );
+  }
+  assert.throws(() => parseWareki('令和8年11月11日(木)'), /Wednesday, not a Thursday/);
+  assert.throws(() => parseWareki('Reiwa 8.11.11 (Mon)'), RangeError);
+  assert.throws(() => parseWareki('令和8年(水)'), /full date/);
+  assert.throws(() => parseWareki('(水)'), SyntaxError);
+  assert.throws(() => parseWareki('Reiwa 8.11.11 (Monkey)'), SyntaxError);
+});
+
+test('every day 1868-2100: weekday agrees with Intl and kanji/weekday text round-trips', () => {
+  const ja = new Intl.DateTimeFormat('ja-JP', { weekday: 'short', timeZone: 'UTC' });
+  for (let t = Date.UTC(1868, 0, 25); t <= Date.UTC(2100, 11, 31); t += DAY_MS) {
+    const d = new Date(t);
+    const parts = { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+    const short = formatWareki(parts, { weekday: 'short' });
+    assert.equal(short.at(-2), ja.format(d), `${d.toISOString().slice(0, 10)} weekday`);
+    const expected = new Date(parts.year, parts.month - 1, parts.day).getTime();
+    for (const opts of [
+      { weekday: 'short' },
+      { weekday: 'long' },
+      { numerals: 'kanji' },
+      { numerals: 'kanji', weekday: 'long' },
+      { style: 'short', weekday: 'long' },
+      { style: 'roman', weekday: 'long' },
+    ]) {
+      const text = formatWareki(parts, opts);
+      assert.equal(fromWareki(text).getTime(), expected, text);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const CLI = fileURLToPath(new URL('../bin/wareki.js', import.meta.url));
+const run = (...args) => {
+  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
+  return { out: r.stdout.trim(), err: r.stderr.trim(), code: r.status };
+};
+
+test('CLI: Gregorian to wareki', () => {
+  assert.deepEqual(run('2026-11-11'), { out: '令和8年11月11日', err: '', code: 0 });
+  assert.equal(run('2026-11-11', '--style', 'short').out, 'R8.11.11');
+  assert.equal(run('2026-11-11', '-s', 'roman').out, 'Reiwa 8.11.11');
+  assert.equal(run('2026-11-11', '--kanji').out, '令和八年十一月十一日');
+  assert.equal(run('2026-11-11', '-k', '-w', 'long').out, '令和八年十一月十一日水曜日');
+  assert.equal(run('2019').out, '令和元年');
+  assert.equal(run('2026-11').out, '令和8年11月');
+});
+
+test('CLI: wareki to Gregorian', () => {
+  assert.equal(run('令和8年11月11日').out, '2026-11-11');
+  assert.equal(run('R8.11.11').out, '2026-11-11');
+  assert.equal(run('令和八年十一月十一日').out, '2026-11-11');
+  assert.equal(run('Reiwa', '8.11.11').out, '2026-11-11', 'words joined');
+  assert.equal(run('平成元年').out, '1989');
+  assert.equal(run('平成元年1月').out, '1989-01');
+});
+
+test('CLI: no date prints today, json, help and version', () => {
+  const today = run();
+  assert.equal(today.code, 0);
+  assert.match(today.out, /^令和\d+年\d+月\d+日$/);
+  assert.equal(JSON.parse(run('2026-11-11', '--json').out).era, '令和');
+  assert.equal(JSON.parse(run('R8.11.11', '--json').out).gregorianYear, 2026);
+  assert.match(run('--help').out, /Usage:/);
+  assert.match(run('-v').out, /^\d+\.\d+\.\d+$/);
+});
+
+test('CLI: errors go to stderr with a non-zero exit code', () => {
+  for (const args of [['平成31年5月1日'], ['2026-02-30'], ['hello'], ['--nope'], ['2026-11-11', '-s', 'fancy']]) {
+    const r = run(...args);
+    assert.equal(r.code, 1, args.join(' '));
+    assert.equal(r.out, '');
+    assert.match(r.err, /^wareki: /);
+  }
+});

@@ -66,6 +66,21 @@ export interface FormatOptions {
    * @default true
    */
   gannen?: boolean;
+  /**
+   * 'arabic' -> 令和8年11月11日
+   * 'kanji'  -> 令和八年十一月十一日
+   * Kanji numerals only work with style 'long'.
+   * @default 'arabic'
+   */
+  numerals?: 'arabic' | 'kanji';
+  /**
+   * Append the day of the week. Needs a full date (year, month and day).
+   * 'short' -> 令和8年11月11日(水)   R8.11.11(水)   Reiwa 8.11.11 (Wed)
+   * 'long'  -> 令和8年11月11日水曜日 R8.11.11(水曜日) Reiwa 8.11.11 (Wednesday)
+   * `true` is the same as 'short'.
+   * @default false
+   */
+  weekday?: boolean | 'short' | 'long';
 }
 
 /** The supported eras, oldest first. */
@@ -74,7 +89,10 @@ export const ERAS: readonly Era[];
 /** Convert a Gregorian date to a wareki date. */
 export function toWareki(input: GregorianInput): WarekiDate;
 
-/** Parse text such as "令和8年11月11日", "R8.11.11" or "Reiwa 8". */
+/**
+ * Parse text such as "令和8年11月11日", "令和八年十一月十一日", "R8.11.11" or "Reiwa 8".
+ * A trailing weekday like "(水)" is accepted and must match the date.
+ */
 export function parseWareki(text: string): WarekiDate;
 
 /** Convert a wareki date (text or object) to a Date at local midnight. Month and day are required. */
