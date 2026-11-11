@@ -1,0 +1,30 @@
+name: Publish to GitHub Packages
+
+# Publishes a scoped copy (@yoru-exe/wareki-kit) to GitHub Packages so it shows up
+# in the repo's "Packages" sidebar. The main package stays on npmjs.com as `wareki-kit`.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: '@yoru-exe'
+      - run: npm test
+      - name: Rename for GitHub Packages (scope must match the owner)
+        run: npm pkg set name=@yoru-exe/wareki-kit
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
