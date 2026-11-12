@@ -18,6 +18,8 @@ const daysInMonth = (y, m) => (m === 2 && isLeapYear(y) ? 29 : DAYS_IN_MONTH[m -
 /** Sortable integer for a calendar date, e.g. 2026-11-11 -> 20261111. */
 const key = (y, m, d) => y * 10000 + m * 100 + d;
 const pad = (n) => String(n).padStart(2, '0');
+/** User text as shown in an error message, so a huge input cannot make a huge message. */
+const preview = (text) => (text.length > 40 ? `${text.slice(0, 40)}…` : text);
 const iso = ({ year, month, day }) => `${year}-${pad(month)}-${pad(day)}`;
 
 // ---------------------------------------------------------------------------
@@ -25,17 +27,38 @@ const iso = ({ year, month, day }) => `${year}-${pad(month)}-${pad(day)}`;
 // ---------------------------------------------------------------------------
 
 const KANJI_DIGITS = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
-const KANJI_VALUES = new Map([['零', 0], ...KANJI_DIGITS.map((c, i) => [c, i])]);
+// Daiji (大字): the forms used in legal and financial documents, where 一 二 三 十
+// are too easy to alter. Only these four are replaced; the other numerals are unchanged.
+const DAIJI = new Map([
+  ['一', '壱'],
+  ['二', '弐'],
+  ['三', '参'],
+  ['十', '拾'],
+]);
+const KANJI_VALUES = new Map([
+  ['零', 0],
+  ...KANJI_DIGITS.map((c, i) => [c, i]),
+  ['壱', 1],
+  ['壹', 1], // old form of 壱
+  ['弐', 2],
+  ['貳', 2], // old form of 弐
+  ['参', 3],
+  ['參', 3], // old form of 参
+]);
 const KANJI_UNITS = new Map([
   ['十', 10],
+  ['拾', 10],
   ['百', 100],
   ['千', 1000],
 ]);
 const WEEKDAYS_JA = ['日', '月', '火', '水', '木', '金', '土'];
 const WEEKDAYS_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-/** 8 -> 八, 11 -> 十一, 20 -> 二十, 64 -> 六十四, 100 -> 百. Falls back to digits above 9999. */
-function toKanjiNumber(n) {
+/**
+ * 8 -> 八, 11 -> 十一, 20 -> 二十, 64 -> 六十四, 100 -> 百. Falls back to digits above 9999.
+ * With `daiji`, 一 二 三 十 become 壱 弐 参 拾: 11 -> 拾壱, 22 -> 弐拾弐.
+ */
+function toKanjiNumber(n, daiji = false) {
   if (n > 9999) return String(n);
   let out = '';
   let rest = n;
@@ -48,7 +71,8 @@ function toKanjiNumber(n) {
     rest %= value;
     if (digit > 0) out += (digit === 1 ? '' : KANJI_DIGITS[digit]) + unit;
   }
-  return out + (rest > 0 ? KANJI_DIGITS[rest] : '');
+  out += rest > 0 ? KANJI_DIGITS[rest] : '';
+  return daiji ? [...out].map((c) => DAIJI.get(c) ?? c).join('') : out;
 }
 
 /**
@@ -128,7 +152,7 @@ function findEra(token) {
   const label =
     typeof token === 'string' ? stripMarks(token.normalize('NFKC').trim()).toLowerCase() : '';
   const era = ERA_LOOKUP.get(label);
-  if (!era) throw new RangeError(`Unknown era: ${String(token)}`);
+  if (!era) throw new RangeError(`Unknown era: ${typeof token === 'string' ? preview(token) : String(token)}`);
   return era;
 }
 
@@ -165,12 +189,110 @@ const STYLES = ['long', 'short', 'roman'];
 
 function formatParts(era, eraYear, month, day, style, gannen, numerals = 'arabic') {
   if (style === 'long') {
-    const n = numerals === 'kanji' ? toKanjiNumber : String;
+    const n =
+      numerals === 'kanji'
+        ? toKanjiNumber
+        : numerals === 'daiji'
+          ? (value) => toKanjiNumber(value, true)
+          : String;
     const y = gannen && eraYear === 1 ? '元' : n(eraYear);
     return `${era.name}${y}年${month === null ? '' : `${n(month)}月`}${day === null ? '' : `${n(day)}日`}`;
   }
   const head = style === 'short' ? `${era.short}${eraYear}` : `${era.roman} ${eraYear}`;
   return head + (month === null ? '' : `.${month}`) + (day === null ? '' : `.${day}`);
+}
+
+/** Which repeat counts each pattern letter accepts. See formatWareki(). */
+const PATTERN_TOKENS = {
+  G: [1, 3, 4], // R, Reiwa, 令和
+  y: [1, 2], // 8, 08
+  Y: [1], // 元 for the first year, otherwise 8
+  u: [1, 4], // 2026
+  M: [1, 2],
+  d: [1, 2],
+  E: [1, 4], // 水, 水曜日
+};
+
+/** Renders an era date with a pattern such as "GGGGy年M月d日(E)". */
+function formatPattern(w, pattern, numerals) {
+  const number = (value, width) => {
+    if (numerals === 'arabic') return String(value).padStart(width, '0');
+    if (width > 1) {
+      throw new RangeError(`Zero-padded tokens such as "yy" cannot be used with numerals: "${numerals}"`);
+    }
+    return toKanjiNumber(value, numerals === 'daiji');
+  };
+  const require = (value, what, token) => {
+    if (value === null) throw new RangeError(`The pattern uses "${token}" but the date has no ${what}`);
+    return value;
+  };
+
+  let out = '';
+  let i = 0;
+  while (i < pattern.length) {
+    const c = pattern[i];
+
+    if (c === "'") {
+      // Two quotes in a row, inside quoted text or not, make one '.
+      if (pattern[i + 1] === "'") {
+        out += "'";
+        i += 2;
+        continue;
+      }
+      // Otherwise 'quoted text' is copied as it is.
+      let j = i + 1;
+      let literal = '';
+      for (;;) {
+        if (j >= pattern.length) {
+          throw new SyntaxError(`Unterminated quote in pattern "${preview(pattern)}"`);
+        }
+        if (pattern[j] === "'") {
+          if (pattern[j + 1] !== "'") break;
+          literal += "'";
+          j += 2;
+        } else {
+          literal += pattern[j];
+          j += 1;
+        }
+      }
+      out += literal;
+      i = j + 1;
+      continue;
+    }
+
+    if (!/[A-Za-z]/.test(c)) {
+      out += c;
+      i += 1;
+      continue;
+    }
+
+    let end = i + 1;
+    while (pattern[end] === c) end += 1;
+    const token = pattern.slice(i, end);
+    const allowed = PATTERN_TOKENS[c];
+    if (!allowed || !allowed.includes(token.length)) {
+      const known = Object.entries(PATTERN_TOKENS)
+        .map(([letter, lengths]) => lengths.map((n) => letter.repeat(n)).join(' '))
+        .join(' ');
+      throw new RangeError(
+        `Unsupported pattern token "${preview(token)}". Supported: ${known}. Put literal letters in 'quotes'.`,
+      );
+    }
+
+    if (c === 'G') out += token.length === 1 ? w.eraShort : token.length === 3 ? w.eraRoman : w.era;
+    else if (c === 'y') out += number(w.year, token.length);
+    else if (c === 'Y') out += w.year === 1 ? '元' : number(w.year, 1);
+    else if (c === 'u') out += number(w.gregorianYear, token.length);
+    else if (c === 'M') out += number(require(w.month, 'month', token), token.length);
+    else if (c === 'd') out += number(require(w.day, 'day', token), token.length);
+    else {
+      require(w.day, 'day', token);
+      const name = WEEKDAYS_JA[weekdayOf(w.gregorianYear, w.month, w.day)];
+      out += token.length === 1 ? name : `${name}曜日`;
+    }
+    i = end;
+  }
+  return out;
 }
 
 /** Validates an era date and returns it in the standard result shape. */
@@ -202,27 +324,89 @@ function resolveWareki(input) {
   return build(era, year, month, day);
 }
 
-/** Reads a Date, "YYYY-MM-DD" string, year number or { year, month?, day? } object. */
-function readGregorian(input) {
+/** The calendar id of a Temporal object ("iso8601" for the default), or undefined for anything else. */
+function temporalCalendar(input) {
+  const calendar = input.calendarId ?? input.calendar; // `calendar` is the older spelling
+  const id = typeof calendar === 'string' ? calendar : calendar?.id;
+  return typeof id === 'string' && typeof input.year === 'number' && typeof input.month === 'number'
+    ? id
+    : undefined;
+}
+
+const ZONED_FORMATTERS = new Map();
+
+/** The calendar year, month and day a Date has in the given IANA time zone. */
+function zonedParts(date, timeZone) {
+  let fmt = ZONED_FORMATTERS.get(timeZone);
+  if (!fmt) {
+    // Throws a RangeError for an unknown time zone, so only valid zones get cached.
+    fmt = new Intl.DateTimeFormat('en-US-u-ca-gregory-nu-latn', {
+      timeZone,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+    });
+    ZONED_FORMATTERS.set(timeZone, fmt);
+  }
+  const parts = fmt.formatToParts(date);
+  const get = (type) => Number(parts.find((p) => p.type === type).value);
+  return { year: get('year'), month: get('month'), day: get('day') };
+}
+
+/**
+ * Reads a Date, "YYYY-MM-DD" string, year number or { year, month?, day? } object.
+ * `timeZone` only affects Date input: without it a Date is read in local time.
+ */
+function readGregorian(input, timeZone) {
   let year;
   let month = null;
   let day = null;
 
+  if (timeZone !== undefined && typeof timeZone !== 'string') {
+    throw new TypeError(`Invalid timeZone: ${String(timeZone)} (expected an IANA name such as "Asia/Tokyo")`);
+  }
+
   if (input instanceof Date) {
     if (Number.isNaN(input.getTime())) throw new TypeError('Invalid Date');
-    year = input.getFullYear();
-    month = input.getMonth() + 1;
-    day = input.getDate();
+    if (timeZone === undefined) {
+      year = input.getFullYear();
+      month = input.getMonth() + 1;
+      day = input.getDate();
+    } else {
+      ({ year, month, day } = zonedParts(input, timeZone));
+    }
   } else if (typeof input === 'string') {
     const m = /^(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?$/.exec(input.normalize('NFKC').trim());
     if (!m) {
-      throw new TypeError(`Cannot read "${input}" as a date. Use "YYYY-MM-DD", "YYYY-MM" or "YYYY".`);
+      throw new TypeError(
+        `Cannot read "${preview(input)}" as a date. Use "YYYY-MM-DD", "YYYY-MM" or "YYYY".`,
+      );
     }
     year = Number(m[1]);
     month = m[2] === undefined ? null : Number(m[2]);
     day = m[3] === undefined ? null : Number(m[3]);
   } else if (typeof input === 'number') {
     year = input;
+  } else if (input !== null && typeof input === 'object' && temporalCalendar(input) !== undefined) {
+    // Temporal.PlainDate, PlainDateTime, PlainYearMonth or ZonedDateTime. This must come
+    // before the generic object branch: these objects have an `era` getter.
+    const calendar = temporalCalendar(input);
+    if (calendar !== 'iso8601') {
+      throw new TypeError(
+        `Only the ISO 8601 calendar is supported (got "${calendar}"). Convert it first with .withCalendar('iso8601').`,
+      );
+    }
+    year = input.year;
+    month = input.month;
+    day = input.day ?? null; // a PlainYearMonth has no day
+  } else if (
+    input !== null &&
+    typeof input === 'object' &&
+    typeof input.epochMilliseconds === 'number' &&
+    input.year === undefined
+  ) {
+    // Temporal.Instant: read it like a Date, in `timeZone` or local time.
+    return readGregorian(new Date(input.epochMilliseconds), timeZone);
   } else if (input !== null && typeof input === 'object') {
     if ('era' in input) {
       throw new TypeError(
@@ -246,7 +430,7 @@ function readGregorian(input) {
 // Parsing patterns
 // ---------------------------------------------------------------------------
 
-const NUMBER = String.raw`(?:\d{1,5}|[〇零一二三四五六七八九十百千]+)`;
+const NUMBER = String.raw`(?:\d{1,5}|[〇零一二三四五六七八九十百千壱壹弐貳参參拾]+)`;
 
 /** Real dates are a few dozen characters. Anything longer is rejected up front. */
 const MAX_INPUT_LENGTH = 200;
@@ -278,9 +462,11 @@ const WEEKDAY_SUFFIX =
  * @example
  * toWareki('2026-11-11');
  * // { era: '令和', eraRoman: 'Reiwa', eraShort: 'R', year: 8, month: 11, day: 11, gregorianYear: 2026 }
+ *
+ * Pass `{ timeZone: 'Asia/Tokyo' }` to read a Date in that time zone instead of local time.
  */
-export function toWareki(input) {
-  const { year, month, day } = readGregorian(input);
+export function toWareki(input, options) {
+  const { year, month, day } = readGregorian(input, options?.timeZone);
   const probe = key(year, month ?? 12, day ?? daysInMonth(year, month ?? 12));
 
   for (let i = ERAS.length - 1; i >= 0; i--) {
@@ -386,25 +572,39 @@ export function fromWareki(input) {
  *  - gannen: write 元年 instead of 1年 in the long style (default true)
  *  - numerals: 'arabic' (default) or 'kanji' (令和八年十一月十一日); long style only
  *  - weekday: false (default), 'short' or 'long' (or true for 'short'); needs a full date
+ *  - timeZone: IANA name, used to read a Date (see toWareki)
+ *  - pattern: your own layout instead of style/gannen/weekday, e.g. 'GGGGy年M月d日(E)'.
+ *      G R  GGG Reiwa  GGGG 令和 | y 8  yy 08  Y 元 or 8  u 2026  uuuu 2026
+ *      M 11  MM 11  d 5  dd 05 | E 水  EEEE 水曜日 | 'quoted text' | other characters as they are
+ *    `numerals` still applies to the number tokens. Unknown letters throw.
  */
 export function formatWareki(input, options = {}) {
-  const { style = 'long', gannen = true, numerals = 'arabic' } = options;
+  const { style = 'long', gannen = true, numerals = 'arabic', timeZone } = options;
   const weekday = options.weekday === true ? 'short' : (options.weekday ?? false);
 
   if (!STYLES.includes(style)) {
     throw new RangeError(`Unknown style "${String(style)}". Use ${STYLES.map((s) => `"${s}"`).join(', ')}.`);
   }
-  if (numerals !== 'arabic' && numerals !== 'kanji') {
-    throw new RangeError(`Unknown numerals "${String(numerals)}". Use "arabic" or "kanji".`);
+  if (numerals !== 'arabic' && numerals !== 'kanji' && numerals !== 'daiji') {
+    throw new RangeError(`Unknown numerals "${String(numerals)}". Use "arabic", "kanji" or "daiji".`);
   }
-  if (numerals === 'kanji' && style !== 'long') {
-    throw new RangeError('numerals: "kanji" can only be used with style: "long"');
+  if (numerals !== 'arabic' && style !== 'long') {
+    throw new RangeError(`numerals: "${numerals}" can only be used with style: "long"`);
   }
   if (weekday !== false && weekday !== 'short' && weekday !== 'long') {
     throw new RangeError(`Unknown weekday option "${String(weekday)}". Use false, "short" or "long".`);
   }
+  if (options.pattern !== undefined) {
+    if (typeof options.pattern !== 'string') throw new TypeError('The "pattern" option must be a string');
+    for (const option of ['style', 'gannen', 'weekday']) {
+      if (options[option] !== undefined) {
+        throw new RangeError(`The "pattern" option cannot be combined with "${option}": put it in the pattern instead`);
+      }
+    }
+  }
 
-  const w = toWareki(input);
+  const w = toWareki(input, { timeZone });
+  if (options.pattern !== undefined) return formatPattern(w, options.pattern, numerals);
   const text = formatParts(findEra(w.era), w.year, w.month, w.day, style, gannen, numerals);
   if (weekday === false) return text;
 
@@ -431,8 +631,8 @@ export function toGregorianYear(era, year) {
 }
 
 /** The era object (see ERAS) in effect for a Gregorian date. */
-export function getEra(input) {
-  return findEra(toWareki(input).era);
+export function getEra(input, options) {
+  return findEra(toWareki(input, options).era);
 }
 
 /**
@@ -448,4 +648,163 @@ export function erasInYear(year) {
     throw new RangeError(`Years before ${ERAS[0].start.year} are not supported`);
   }
   return matches;
+}
+
+// ---------------------------------------------------------------------------
+// Fiscal years (年度)
+// ---------------------------------------------------------------------------
+
+/** The Gregorian year in which the fiscal year containing this date begins. */
+function fiscalYearOf(input, startMonth, timeZone) {
+  if (!Number.isInteger(startMonth) || startMonth < 1 || startMonth > 12) {
+    throw new RangeError(`Invalid startMonth: ${String(startMonth)} (expected 1-12)`);
+  }
+  const { year, month } = readGregorian(input, timeZone);
+  if (startMonth === 1) return year;
+  if (month === null) {
+    throw new RangeError('A fiscal year needs at least a year and a month (or a full date)');
+  }
+  return month >= startMonth ? year : year - 1;
+}
+
+/**
+ * The fiscal year (年度) a date falls in, as a wareki object with no month or day.
+ * The fiscal year starts in April by default (`startMonth`, 1-12) and is named by
+ * the year it starts in. `gregorianYear` is that starting year.
+ *
+ * Like a year-only date, it uses the era in effect at the END of that calendar
+ * year, so April 2019 to March 2020 is 令和元年度 (not 平成31年度).
+ *
+ * @example
+ * toNendo('2026-03-31'); // 令和7年度 (era year 7)
+ * toNendo('2026-04-01'); // 令和8年度 (era year 8)
+ */
+export function toNendo(input, options = {}) {
+  return toWareki(fiscalYearOf(input, options.startMonth ?? 4, options.timeZone));
+}
+
+/**
+ * Format the fiscal year of a date as text.
+ * Takes the options of formatWareki (except `weekday`) plus `startMonth`.
+ *
+ *  formatNendo('2026-05-01')                    // 令和8年度
+ *  formatNendo('2026-05-01', { style: 'short' }) // R8年度
+ *  formatNendo('2026-05-01', { style: 'roman' }) // Reiwa 8 fiscal year
+ */
+export function formatNendo(input, options = {}) {
+  if (options.pattern !== undefined) throw new RangeError('formatNendo() does not support the "pattern" option');
+  const { startMonth = 4, timeZone, style = 'long', ...rest } = options;
+  const text = formatWareki(fiscalYearOf(input, startMonth, timeZone), { ...rest, style });
+  if (style === 'short') return `${text}年度`;
+  if (style === 'roman') return `${text} fiscal year`;
+  return `${text}度`;
+}
+
+/**
+ * Parse fiscal year text such as "令和8年度", "令和元年度", "令和八年度", "R8年度" or
+ * "Reiwa 8 fiscal year". The result has no month or day, and `gregorianYear` is
+ * the calendar year the fiscal year starts in. Names written before an era change,
+ * such as "平成31年度" (the same fiscal year as 令和元年度), are accepted too.
+ */
+export function parseNendo(text) {
+  if (typeof text !== 'string') throw new TypeError('parseNendo() expects a string');
+  if (text.length > MAX_INPUT_LENGTH) {
+    throw new SyntaxError(`Input is too long to be a fiscal year (over ${MAX_INPUT_LENGTH} characters)`);
+  }
+  const s = text.normalize('NFKC').trim();
+
+  const candidates = [];
+  if (s.endsWith('年度')) candidates.push(s.slice(0, -1), s.slice(0, -2)); // 令和8年度, R8年度
+  else if (s.endsWith('度')) candidates.push(s.slice(0, -1));
+  else {
+    const m = /^(.{1,100}?)\s+fiscal\s+year$/i.exec(s);
+    if (m) candidates.push(m[1]);
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const w = parseWareki(candidate);
+      if (w.month === null) return w; // "令和8年4月度" is not a fiscal year
+    } catch (error) {
+      if (error instanceof RangeError) throw error; // readable, but the date cannot exist
+    }
+  }
+  throw new SyntaxError(
+    `Cannot parse "${text}" as a fiscal year. Try "令和8年度", "R8年度" or "Reiwa 8 fiscal year".`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers that never throw
+// ---------------------------------------------------------------------------
+
+/** Like parseWareki(), but returns null instead of throwing (also for non-strings). */
+export function tryParseWareki(text) {
+  try {
+    return parseWareki(text);
+  } catch {
+    return null;
+  }
+}
+
+/** True if the text is a valid wareki date, such as "令和8年11月11日" or "R8.11.11". */
+export function isValidWareki(text) {
+  return tryParseWareki(text) !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Finding wareki dates in text
+// ---------------------------------------------------------------------------
+
+const SPACE = String.raw`[ \t　]*`; // spaces inside a date; never a line break
+const TEXT_NUMBER = String.raw`(?:[0-9０-９]{1,5}|[〇零一二三四五六七八九十百千壱壹弐貳参參拾]+)`;
+
+/** 令和8年11月11日, 令和元年, 令和八年十一月十一日, 令和８年１１月１１日 */
+const FIND_KANJI = String.raw`(?:明治|大正|昭和|平成|令和)${SPACE}(?:元|${TEXT_NUMBER})${SPACE}年(?:${SPACE}${TEXT_NUMBER}${SPACE}月(?:${SPACE}${TEXT_NUMBER}${SPACE}日)?)?`;
+
+/** Reiwa 8, Reiwa 8.11, Reiwa 8.11.11, Shōwa 64.1.7 (not when followed by more digits or letters) */
+const FIND_ROMAJI = String.raw`(?<![A-Za-z])(?:Meiji|Taish(?:ō?|ō)|Sh(?:ō?|ō)wa|Heisei|Reiwa)[ \t]*[0-9]{1,5}(?:[./-][0-9]{1,2}(?:[./-][0-9]{1,2})?)?(?![A-Za-z0-9]|[./-][0-9])`;
+
+/** R8.11.11: a single letter is only trusted as part of a full date. */
+const FIND_ABBREVIATION = String.raw`(?<![A-Za-z0-9])[MTSHR][0-9]{1,3}[./-][0-9]{1,2}[./-][0-9]{1,2}(?![A-Za-z0-9]|[./-][0-9])`;
+
+/**
+ * Find wareki dates in a piece of text and return them in order.
+ *
+ * Each result has the matched `text`, its position (`index` and `end`, so that
+ * `source.slice(index, end) === text`) and the parsed `value`, exactly as
+ * parseWareki() would return it. A match can be a year, a year and month, or a full date.
+ *
+ * What is recognised: 令和8年11月11日 (also 元年, kanji and daiji numerals, full-width
+ * digits and spaces), Reiwa 8.11.11 (also Reiwa 8 and Reiwa 8.11), and R8.11.11. A single
+ * letter such as R is only matched as a full date, in capitals, because "R8" alone could be
+ * anything; turn those off with `{ abbreviations: false }`. A year followed by 度, as in
+ * 令和8年度, is a fiscal year and is skipped. A weekday after the date is not part of the match.
+ *
+ * Text that looks like a date but cannot exist (平成31年5月1日, 令和8年2月30日) is skipped.
+ * With `{ includeInvalid: true }` it is returned with `value: null` and an `error` message.
+ */
+export function findWareki(text, options = {}) {
+  if (typeof text !== 'string') throw new TypeError('findWareki() expects a string');
+  const { includeInvalid = false, abbreviations = true } = options;
+
+  const source = [FIND_KANJI, FIND_ROMAJI, ...(abbreviations ? [FIND_ABBREVIATION] : [])].join('|');
+  const found = [];
+  for (const match of text.matchAll(new RegExp(source, 'gi'))) {
+    const matched = match[0];
+    const { index } = match;
+    const end = index + matched.length;
+
+    // The "i" flag also lets lowercase letters through: only capital R, H, S, T, M count.
+    if (/^[mtshr][0-9]/i.test(matched) && !/^[MTSHR]/.test(matched)) continue;
+    // 令和8年度 is a fiscal year, not the year 令和8.
+    if (matched.endsWith('年') && text[end] === '度') continue;
+
+    try {
+      found.push({ text: matched, index, end, value: parseWareki(matched) });
+    } catch (error) {
+      if (includeInvalid) found.push({ text: matched, index, end, value: null, error: error.message });
+    }
+  }
+  return found;
 }

@@ -1,6 +1,6 @@
 {
   "name": "wareki-kit",
-  "version": "0.2.1",
+  "version": "0.4.0",
   "description": "Convert between Gregorian dates and Japanese era dates (和暦: 令和, 平成, 昭和, 大正, 明治). Zero dependencies, with TypeScript types.",
   "keywords": [
     "wareki",
@@ -15,31 +15,43 @@
     "和暦",
     "元号",
     "kanji-numerals",
-    "cli"
+    "cli",
+    "nendo",
+    "fiscal-year",
+    "timezone",
+    "commonjs"
   ],
   "license": "MIT",
   "author": "yoru-exe",
   "type": "module",
-  "main": "./src/index.js",
+  "main": "./dist/index.cjs",
   "types": "./src/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.d.ts",
-      "default": "./src/index.js"
+      "import": {
+        "types": "./src/index.d.ts",
+        "default": "./src/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./package.json": "./package.json"
   },
   "files": [
     "src",
+    "dist",
     "bin"
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=22.12"
+    "node": ">=18"
   },
   "scripts": {
+    "build": "node scripts/build-cjs.js",
     "test": "node --test",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm run build && npm test"
   },
   "repository": {
     "type": "git",
