@@ -832,8 +832,11 @@ test('the CommonJS build matches the ESM build', async () => {
 
 test('package.json "exports" resolves for both import and require (self-reference)', async () => {
   const require = createRequire(import.meta.url);
-  const viaImport = await import('wareki-kit');
-  const viaRequire = require('wareki-kit');
+  // Read the name from package.json: the GitHub Packages workflow publishes the
+  // same code as "@yoru-exe/wareki-kit", and self-reference uses whatever the name is.
+  const name = JSON.parse(readProjectFile('package.json')).name;
+  const viaImport = await import(name);
+  const viaRequire = require(name);
   assert.equal(viaImport.formatWareki('2026-11-11'), '令和8年11月11日');
   assert.equal(viaRequire.formatWareki('2026-11-11'), '令和8年11月11日');
   assert.equal(viaImport.formatWareki, (await import('../src/index.js')).formatWareki, 'import -> src/index.js');
